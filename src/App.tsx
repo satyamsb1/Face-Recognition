@@ -1,228 +1,143 @@
-// import { useEffect, useRef } from "react";
-// import "./App.css";
-// import * as faceapi from "face-api.js";
-
-// function App() {
-//   const imgRef = useRef<HTMLImageElement | null>(null);
-//   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-//   const handleImage = async () => {
-//     if (!imgRef.current || !canvasRef.current) return;
-
-//     // 1) detect
-//     const detections = await faceapi
-//       .detectAllFaces(imgRef.current, new faceapi.TinyFaceDetectorOptions())
-//       .withAgeAndGender()
-//       .withFaceExpressions();
-//     console.log(detections);
-//     const displaySize = {
-//       width: imgRef.current.width,
-//       height: imgRef.current.height,
-//     };
-
-//     faceapi.matchDimensions(canvasRef.current, displaySize);
-//     const resized = faceapi.resizeResults(detections, displaySize);
-//     faceapi.draw.drawDetections(canvasRef.current, resized);
-//     faceapi.draw.drawFaceExpressions(canvasRef.current, resized);
-//   };
-
-//   useEffect(() => {
-//     Promise.all([
-//       faceapi.nets.tinyFaceDetector.loadFromUri("/models"),
-//       faceapi.nets.faceLandmark68Net.loadFromUri("/models"),
-//       faceapi.nets.faceRecognitionNet.loadFromUri("/models"),
-//       faceapi.nets.faceExpressionNet.loadFromUri("/models"),
-//       faceapi.nets.ageGenderNet.loadFromUri("/models"),
-//     ])
-//       .then(handleImage)
-//       .catch(console.error);
-//   }, []);
-
-//   return (
-//     <div className="App">
-//       <div style={{ position: "relative", display: "inline-block" }}>
-//         <img
-//           ref={imgRef}
-//           src="https://c8.alamy.com/zooms/9/e30cc776672b452988de7753b16a17fd/ae7px9.jpg"
-//           alt="face-api input"
-//           crossOrigin="anonymous"
-//           style={{ position: "absolute", top: 0, left: 0 }}
-//           onLoad={handleImage}
-//         />
-//         <canvas
-//           ref={canvasRef}
-//           width={940}
-//           height={640}
-//           style={{ position: "absolute", top: 0, left: 0 }}
-//         />
-//       </div>
-//     </div>
-//   );
-// }
-
-// export default App;
-
-// App.tsx  (React + TypeScript)
 // src/App.tsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import * as faceapi from "face-api.js";
 import "./App.css";
 
 export default function App() {
   /* ------------------------------------------------------------------ */
-  /* Refs to the DOM elements                                           */
+  /* DOM element kept in state (callback ref)                            */
   /* ------------------------------------------------------------------ */
-  const videoRef = useRef<HTMLVideoElement>(null); // live webcam preview
-  const imgRef = useRef<HTMLImageElement>(null); // frozen snapshot
-  const canvasRef = useRef<HTMLCanvasElement>(null); // overlay drawings
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
 
-  /* ------------------------------------------------------------------ */
-  /* State                                                               */
-  /* ------------------------------------------------------------------ */
-  const [photoSrc, setPhotoSrc] = useState<string | null>(null); // data-URL of last capture
-  const [buttonClick, setButtonClick] = useState(0);
-  const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(
-    null
-  ); // frame size
+  /* gallery of finished captures (data URLs) -------------------------- */
+  const [gallery, setGallery] = useState<string[]>([]);
 
-  /* ------------------------------------------------------------------ */
-  /* 1. Load Face-API models once                                        */
-  /* ------------------------------------------------------------------ */
+  /* 1. Load Face-API models once -------------------------------------- */
   useEffect(() => {
-    Promise.all([
-      faceapi.nets.tinyFaceDetector.loadFromUri("/models"),
-      faceapi.nets.faceExpressionNet.loadFromUri("/models"),
-      faceapi.nets.ageGenderNet.loadFromUri("/models"),
-    ]).catch(console.error);
-  }, [buttonClick]);
+    (async () => {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri("/models"),
+        faceapi.nets.faceExpressionNet.loadFromUri("/models"),
+        faceapi.nets.ageGenderNet.loadFromUri("/models"),
+      ]);
+      console.log("models ready");
+    })().catch(console.error);
+  }, []);
 
-  /* ------------------------------------------------------------------ */
-  /* 2. Start the webcam on mount                                        */
-  /* ------------------------------------------------------------------ */
+  /* 2. Start webcam when <video> is mounted --------------------------- */
   useEffect(() => {
+    if (!videoEl) return;
+
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
         });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      } catch (err) {
-        alert("Could not access the camera.");
-        console.error(err);
+        videoEl.srcObject = stream;
+      } catch (e) {
+        alert("Camera access denied.");
+        console.error(e);
       }
     })();
 
-    /* stop tracks when component unmounts */
-    return () => {
-      (videoRef.current?.srcObject as MediaStream | null)
+    return () =>
+      (videoEl.srcObject as MediaStream | null)
         ?.getTracks()
         .forEach((t) => t.stop());
-    };
-  }, []);
+  }, [videoEl]);
 
-  /* ------------------------------------------------------------------ */
-  /* 3. Capture the current frame and run detection                      */
-  /* ------------------------------------------------------------------ */
-  const capture = async () => {
-    if (!videoRef.current) return;
-    setButtonClick(buttonClick + 1);
-    /* Ensure metadata is loaded so width/height are non-zero */
-    if (videoRef.current.readyState < 2) {
-      await new Promise((res) => {
-        const handler = () => {
-          videoRef.current?.removeEventListener("loadedmetadata", handler);
-          res(null);
-        };
-        videoRef.current?.addEventListener("loadedmetadata", handler);
-      });
+  /* 3. Capture button handler ---------------------------------------- */
+  const capture = useCallback(async () => {
+    if (!videoEl) return;
+
+    /* wait for metadata so videoWidth/Height aren’t 0 */
+    if (videoEl.readyState < 2) {
+      await new Promise((res) =>
+        videoEl.addEventListener("loadedmetadata", () => res(null), {
+          once: true,
+        })
+      );
     }
 
-    const w = videoRef.current.videoWidth;
-    const h = videoRef.current.videoHeight;
-    setDimensions({ w, h });
+    const w = videoEl.videoWidth;
+    const h = videoEl.videoHeight;
 
-    /* Draw the current video frame onto a temp canvas */
-    const temp = document.createElement("canvas");
-    temp.width = w;
-    temp.height = h;
-    temp.getContext("2d")!.drawImage(videoRef.current, 0, 0, w, h);
+    /* draw current frame to an off-screen canvas */
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(videoEl, 0, 0, w, h);
 
-    /* Convert to PNG data-URL so we can show it in <img> */
-    const dataURL = temp.toDataURL("image/png");
-    setPhotoSrc(dataURL);
-
-    /* Wait until <img> is rendered & pixels are ready */
-    await imgRef.current?.decode();
-
-    /* Run Face-API on the captured frame */
+    /* run detection on that canvas */
     const detections = await faceapi
-      .detectAllFaces(temp, new faceapi.TinyFaceDetectorOptions())
+      .detectAllFaces(canvas, new faceapi.TinyFaceDetectorOptions())
       .withAgeAndGender()
       .withFaceExpressions();
 
-    /* Resize & draw overlays */
-    if (!canvasRef.current) return;
-
-    faceapi.matchDimensions(canvasRef.current, { width: w, height: h });
-    const resized = faceapi.resizeResults(detections, { width: w, height: h });
-
-    const ctx = canvasRef.current.getContext("2d")!;
-    ctx.clearRect(0, 0, w, h);
-    faceapi.draw.drawDetections(canvasRef.current, resized);
-    faceapi.draw.drawFaceExpressions(canvasRef.current, resized);
-
-    /* Draw age & gender text fields */
+    /* draw detections ON THE SAME canvas */
+    faceapi.draw.drawDetections(canvas, detections);
+    faceapi.draw.drawFaceExpressions(
+      canvas,
+      faceapi.resizeResults(detections, { width: w, height: h })
+    );
     detections.forEach((det) => {
-      const anchor = det.detection.box.bottomRight;
       new faceapi.draw.DrawTextField(
         [det.gender, `${Math.round(det.age)} yrs`],
-        anchor
-      ).draw(canvasRef.current!);
+        det.detection.box.bottomLeft
+      ).draw(canvas);
     });
-  };
+
+    /* add finished picture to gallery */
+    const url = canvas.toDataURL("image/png");
+    setGallery((prev) => [...prev, url]);
+  }, [videoEl]);
 
   /* ------------------------------------------------------------------ */
   /* JSX                                                                 */
   /* ------------------------------------------------------------------ */
   return (
-    <div className="App">
-      {/* webcam preview */}
+    <div className="App" style={{ textAlign: "center", paddingTop: 16 }}>
+      {/* live preview */}
       <video
-        ref={videoRef}
+        ref={setVideoEl}
         autoPlay
         muted
         style={{
           width: 480,
           height: 360,
-          border: "1px solid #ccc",
           borderRadius: 8,
+          border: "1px solid #ccc",
         }}
       />
 
-      {/* capture button */}
-      <div style={{ margin: "8px 0 16px" }}>
+      {/* capture control */}
+      <div style={{ margin: "12px 0 20px" }}>
         <button onClick={capture}>Capture</button>
       </div>
 
-      {/* frozen photo + overlay */}
-      {photoSrc && dimensions && (
-        <div style={{ position: "relative", display: "inline-block" }}>
+      {/* gallery of all snapshots */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 12,
+          justifyContent: "center",
+        }}>
+        {gallery.map((src, i) => (
           <img
-            ref={imgRef}
-            src={photoSrc}
-            alt="snapshot"
-            style={{ position: "absolute", top: 0, left: 0 }}
+            key={i}
+            src={src}
+            alt={`capture-${i}`}
+            style={{
+              width: 240,
+              height: "auto",
+              border: "1px solid #aaa",
+              borderRadius: 4,
+            }}
           />
-          <canvas
-            ref={canvasRef}
-            width={dimensions.w}
-            height={dimensions.h}
-            style={{ position: "absolute", top: 0, left: 0 }}
-          />
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }
